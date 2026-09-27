@@ -20,7 +20,7 @@ let currentToken: string | null = null
 
 function normalizeAccessToken(token: string | null) {
   if (token === null) return null
-  const normalized = token.trim().replace(/^Token\s+/i, '').trim()
+  const normalized = token.trim().replace(/^(?:Bearer|Token)\s+/i, '').trim()
   if (/\s/.test(normalized)) {
     throw new Error('Token contains spaces. Paste the token value without extra text.')
   }
@@ -151,7 +151,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const method = options.method || 'GET'
   const token = options.token === undefined ? currentToken : options.token
   const headers = new Headers({ Accept: 'application/json' })
-  if (token) headers.set('Authorization', `Token ${token}`)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
 
   let body: BodyInit | undefined
   if (options.body instanceof FormData) {
@@ -268,26 +268,18 @@ export const api = {
     method: 'POST',
     body: { question },
   }),
+  googleLogin: (credential: string) => request<{ access: string; refresh: string; user: { id: number; username: string; email: string; role: string; first_name: string; last_name: string } }>('auth/google/', {
+    method: 'POST',
+    body: { credential },
+  }),
+  me: () => request<{ id: number; username: string; email: string; role: string; first_name: string; last_name: string; is_staff: boolean; is_superuser: boolean }>('auth/me/'),
 }
 
 export async function verifyToken(candidate: string) {
   const token = normalizeAccessToken(candidate)
   if (!token) throw new Error('Enter an API token to connect.')
-  await request<Page<Hillside>>('hillsides/?page_size=1', { token })
-  let isTrainer: boolean
-  try {
-    await request('advisories/', { method: 'POST', body: {}, token })
-    throw new Error('The API accepted an incomplete advisory unexpectedly.')
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 403) {
-      isTrainer = false
-    } else if (error instanceof ApiError && error.status === 400) {
-      isTrainer = true
-    } else {
-      throw error
-    }
-  }
+  const profile = await request<{ role: string; email: string; username: string }>('auth/me/', { token })
   clearReadCache()
   currentToken = token
-  return { isTrainer }
+  return { isTrainer: profile.role === 'trainer' || profile.role === 'agronomist' }
 }
