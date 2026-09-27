@@ -268,6 +268,14 @@ export const api = {
     method: 'POST',
     body: { question },
   }),
+  login: (payload: { username?: string; email?: string; password: string }) => request<{ access: string; refresh: string; user: { id: number; username: string; email: string; role: string; first_name: string; last_name: string } }>('auth/login/', {
+    method: 'POST',
+    body: payload,
+  }),
+  register: (payload: { first_name?: string; last_name?: string; email: string; password: string; username?: string }) => request<{ access: string; refresh: string; user: { id: number; username: string; email: string; role: string; first_name: string; last_name: string } }>('auth/register/', {
+    method: 'POST',
+    body: payload,
+  }),
   googleLogin: (credential: string) => request<{ access: string; refresh: string; user: { id: number; username: string; email: string; role: string; first_name: string; last_name: string } }>('auth/google/', {
     method: 'POST',
     body: { credential },

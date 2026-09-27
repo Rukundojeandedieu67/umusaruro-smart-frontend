@@ -1,833 +1,621 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { Chart, registerables } from 'chart.js'
-import { api, setAccessToken } from './api/client'
-import type { AlertRecord, Hillside, NotificationRecord, Terrace } from './api/types'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Activity,
   AlertTriangle,
-  Bell,
+  ArrowRight,
   Bot,
-  Camera,
   CloudRain,
-  FileImage,
-  Flame,
-  Gauge,
-  Globe,
-  Leaf,
+  Droplets,
+  Loader2,
+  LogOut,
   MapPinned,
-  MessagesSquare,
-  Mic,
-  Microscope,
   ShieldCheck,
   Sprout,
-  UserCircle2,
-  Users,
-  Waves,
-  Zap,
+  User,
+  Wind,
 } from 'lucide-react'
+import { api, setAccessToken } from './api/client'
+import type { AlertRecord, Hillside, Terrace, WeatherForecast } from './api/types'
 import './App.css'
-
-Chart.register(...registerables)
-
-type Role = 'guest' | 'farmer' | 'agronomist' | 'rab'
-type Severity = 'danger' | 'warning' | 'info'
-
-type ChatMessage = {
-  id: number
-  role: 'user' | 'assistant'
-  text: string
-}
-
-type DiagnosisResult = {
-  summary: string
-  recommendation: string
-  confidence: string
-  risk: string
-}
 
 const STORAGE_KEY = 'umusaruro:access-token'
 
-const roleLabels: Record<Role, string> = {
-  guest: 'Guest / Public Visitor',
-  farmer: 'Farmer (Umuhinzi)',
-  agronomist: 'Agronomist',
-  rab: 'RAB Technician',
+type AuthMode = 'signin' | 'register'
+type UserSession = {
+  id: number
+  username: string
+  email: string
+  role: string
+  first_name: string
+  last_name: string
 }
 
-const visibleRoles: Role[] = ['farmer', 'agronomist', 'rab']
-
-const roleHighlights: Record<Role, { title: string; subtitle: string; accent: string }> = {
-  guest: { title: 'Regional overview', subtitle: 'Explore public advisories and risk alerts.', accent: '#14b8a6' },
-  farmer: { title: 'Field command center', subtitle: 'Weather, terrace risk and crop diagnosis in one place.', accent: '#16a34a' },
-  agronomist: { title: 'Sector review', subtitle: 'Verify disease reports and coordinate response actions.', accent: '#f59e0b' },
-  rab: { title: 'National monitoring', subtitle: 'Track outbreaks and district-scale erosion patterns.', accent: '#2563eb' },
+function getStoredAccessToken() {
+  if (typeof window === 'undefined') return ''
+  return window.sessionStorage.getItem(STORAGE_KEY) || ''
 }
 
-const quickActions = [
-  'Check Terrace Slope Risk',
-  'Identify Maize Disease',
-  'Best Fertilizer Schedule',
-  'Summarize District Risk',
-]
-
-function normalizeRole(role?: string): Role {
+function normalizeRole(role?: string): 'guest' | 'farmer' | 'extension_worker' | 'agronomist' | 'admin' | 'rab' | 'trainer' {
   switch (role) {
-    case 'rab':
-      return 'rab'
+    case 'admin':
+      return 'admin'
+    case 'extension_worker':
+      return 'extension_worker'
     case 'agronomist':
     case 'trainer':
       return 'agronomist'
+    case 'rab':
+      return 'rab'
     case 'guest':
+      return 'guest'
     default:
       return 'farmer'
   }
 }
 
-function getStoredAccessToken() {
-  if (typeof window === 'undefined') return ''
-  return window.localStorage.getItem(STORAGE_KEY) || ''
-}
-
-async function fileToDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result))
-    reader.onerror = () => reject(new Error('Unable to read the selected image.'))
-    reader.readAsDataURL(file)
-  })
+function badgeLabel(role: string) {
+  switch (role) {
+    case 'admin':
+      return 'Administrator'
+    case 'extension_worker':
+      return 'Extension worker'
+    case 'agronomist':
+      return 'Agronomist'
+    case 'rab':
+      return 'RAB officer'
+    case 'trainer':
+      return 'Trainer'
+    case 'guest':
+      return 'Guest'
+    default:
+      return 'Farmer'
+  }
 }
 
 function App() {
-  const [selectedRole, setSelectedRole] = useState<Role>('farmer')
-  const [assistantOpen, setAssistantOpen] = useState(true)
-  const [assistantInput, setAssistantInput] = useState('')
-  const [assistantMessages, setAssistantMessages] = useState<ChatMessage[]>([
-    {
-      id: 1,
-      role: 'assistant',
-      text: 'Welcome to UMUSARURO-SMART. Ask about terrace risk, crop health, or the next best field action.',
-    },
-  ])
-  const [assistantBusy, setAssistantBusy] = useState(false)
-  const [isListening, setIsListening] = useState(false)
-  const [showApiModal, setShowApiModal] = useState(false)
-  const [authMode, setAuthMode] = useState<'jwt' | 'google'>('jwt')
-  const [authTokenInput, setAuthTokenInput] = useState(getStoredAccessToken())
-  const [googleCredentialInput, setGoogleCredentialInput] = useState('')
-  const [authBusy, setAuthBusy] = useState(false)
-  const [isAuthenticated, setIsAuthenticated] = useState(Boolean(getStoredAccessToken()))
-  const [authEmail, setAuthEmail] = useState('')
-  const [signInError, setSignInError] = useState('')
-  const [leafFile, setLeafFile] = useState<File | null>(null)
-  const [leafPreview, setLeafPreview] = useState<string | null>(null)
-  const [diagnosis, setDiagnosis] = useState<DiagnosisResult | null>(null)
-  const [diagnosisError, setDiagnosisError] = useState('')
-  const [diagnosisBusy, setDiagnosisBusy] = useState(false)
-  const [backendStatus, setBackendStatus] = useState<'ready' | 'fallback' | 'error'>('fallback')
-  const [liveCounts, setLiveCounts] = useState({ hillsides: 0, alerts: 0, notifications: 0 })
-  const [liveAlerts, setLiveAlerts] = useState<AlertRecord[]>([])
-  const [liveNotifications, setLiveNotifications] = useState<NotificationRecord[]>([])
+  const [token, setToken] = useState<string | null>(() => getStoredAccessToken() || null)
+  const [user, setUser] = useState<UserSession | null>(null)
+  const [hillsides, setHillsides] = useState<Hillside[]>([])
+  const [selectedHillsideId, setSelectedHillsideId] = useState<number | null>(null)
   const [terraces, setTerraces] = useState<Terrace[]>([])
-  const [selectedTerraceId, setSelectedTerraceId] = useState<number | null>(null)
-  const riskChartRef = useRef<HTMLCanvasElement | null>(null)
+  const [alerts, setAlerts] = useState<AlertRecord[]>([])
+  const [forecast, setForecast] = useState<WeatherForecast | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [authMode, setAuthMode] = useState<AuthMode>('signin')
+  const [authOpen, setAuthOpen] = useState(false)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [authForm, setAuthForm] = useState({ email: '', password: '' })
+  const [registerForm, setRegisterForm] = useState({
+    first_name: '',
+    last_name: '',
+    email: '',
+    password: '',
+    username: '',
+  })
+  const [assistantInput, setAssistantInput] = useState('')
+  const [assistantBusy, setAssistantBusy] = useState(false)
+  const [assistantReply, setAssistantReply] = useState('')
 
-  const currentRoleConfig = roleHighlights[selectedRole]
-
-  const metricCards = useMemo(() => ({
-    guest: [
-      { label: 'Public risk alerts', value: String(liveCounts.alerts || 0), note: 'Live backend alerts', tone: 'green', icon: Bell },
-      { label: 'Notifications', value: String(liveCounts.notifications || 0), note: 'Latest advisories', tone: 'amber', icon: Activity },
-      { label: 'Hillsides tracked', value: String(liveCounts.hillsides || 0), note: 'Data points on record', tone: 'sky', icon: CloudRain },
-      { label: 'AI guidance', value: backendStatus === 'ready' ? 'Live' : 'Pending', note: 'Backend-connected assistant', tone: 'forest', icon: Bot },
-    ],
-    farmer: [
-      { label: 'Terraces', value: String(terraces.length || 0), note: 'Available field segments', tone: 'green', icon: Gauge },
-      { label: 'Slope alerts', value: String(liveCounts.alerts || 0), note: 'Active risk notices', tone: 'amber', icon: Flame },
-      { label: 'Erosion risk', value: liveCounts.alerts ? 'Track' : 'Low', note: liveCounts.alerts ? `${liveCounts.alerts} plot(s) flagged` : 'No open alerts', tone: 'sky', icon: Waves },
-      { label: 'AI engine', value: backendStatus === 'ready' ? 'Online' : 'Offline', note: 'Leaf scanner status', tone: 'forest', icon: Microscope },
-    ],
-    agronomist: [
-      { label: 'Sectors monitored', value: String(liveCounts.hillsides || 0), note: 'Backend hillside records', tone: 'green', icon: MapPinned },
-      { label: 'Reports under review', value: String(liveAlerts.filter((alert) => alert.status === 'pending').length), note: 'Pending review queue', tone: 'amber', icon: ShieldCheck },
-      { label: 'Alerts dispatched', value: String(liveAlerts.filter((alert) => alert.status === 'confirmed').length), note: 'Confirmed field events', tone: 'sky', icon: Zap },
-      { label: 'AI confidence', value: backendStatus === 'ready' ? 'Synced' : 'Waiting', note: 'Backend data status', tone: 'forest', icon: Bot },
-    ],
-    rab: [
-      { label: 'Districts active', value: String(new Set(liveAlerts.map((alert) => alert.hillside_id)).size || 0), note: 'Active hillside records', tone: 'green', icon: Globe },
-      { label: 'Disease index', value: String(liveAlerts.filter((alert) => alert.alert_type === 'leaf_disease').length), note: 'Leaf disease alerts', tone: 'amber', icon: Activity },
-      { label: 'Erosion hot spots', value: String(liveAlerts.filter((alert) => alert.alert_type === 'runoff_erosion').length), note: 'Runoff risk notices', tone: 'sky', icon: AlertTriangle },
-      { label: 'System health', value: backendStatus === 'ready' ? '99.2%' : 'Pending', note: 'Live backend status', tone: 'forest', icon: Users },
-    ],
-  }), [backendStatus, liveAlerts, liveCounts, terraces.length])
-
-  const featuredAlerts = useMemo(
-    () => (liveAlerts.length ? liveAlerts.slice(0, 3).map((alert) => ({
-      title: alert.notification_title || alert.message,
-      district: alert.hillside_name || 'Hillside',
-      severity: alert.status === 'confirmed' ? 'danger' : alert.status === 'pending' ? 'warning' : 'info',
-      value: alert.confidence ? `${alert.confidence}` : 'Live',
-    })) : [
-      { title: 'No backend alerts yet', district: 'System', severity: 'info' as Severity, value: 'Waiting' },
-      { title: 'Awaiting recorded hillside activity', district: 'Data sync', severity: 'warning' as Severity, value: 'Pending' },
-      { title: 'Live monitoring will appear here', district: 'Backend', severity: 'info' as Severity, value: 'Stand by' },
-    ]),
-    [liveAlerts],
-  )
-
-  const newsFeed = useMemo(
-    () => (liveNotifications.length ? liveNotifications.slice(0, 3).map((notification) => ({
-      title: notification.notification_title || notification.message,
-      time: new Date(notification.created_at).toLocaleDateString(),
-      severity: notification.status === 'confirmed' ? 'danger' as Severity : notification.status === 'pending' ? 'warning' as Severity : 'info' as Severity,
-      tag: notification.status === 'confirmed' ? 'Confirmed' : notification.status === 'pending' ? 'Review' : 'Update',
-    })) : [
-      { title: 'No recent backend notifications', time: 'Awaiting sync', severity: 'info' as Severity, tag: 'System' },
-      { title: 'Backend advisories will populate automatically', time: 'After data arrives', severity: 'warning' as Severity, tag: 'Queue' },
-      { title: 'Live feeds sync when the backend is active', time: 'Connected state', severity: 'info' as Severity, tag: 'Status' },
-    ]),
-    [liveNotifications],
-  )
+  const isAuthenticated = Boolean(token)
 
   useEffect(() => {
-    if (!isAuthenticated) return
-    setAccessToken(getStoredAccessToken())
+    setAccessToken(token)
+    if (!token) {
+      setUser(null)
+      return
+    }
 
-    void api.me()
-      .then((profile) => {
-        const normalizedRole = normalizeRole(profile.role)
-        setSelectedRole(normalizedRole)
-        setAuthEmail(profile.email)
+    void api.me().then((profile) => {
+      setUser({
+        id: profile.id,
+        username: profile.username,
+        email: profile.email,
+        role: profile.role,
+        first_name: profile.first_name,
+        last_name: profile.last_name,
       })
-      .catch(() => {
-        handleLogout()
-      })
-  }, [isAuthenticated])
+    }).catch(() => {
+      handleLogout()
+    })
+  }, [token])
 
   useEffect(() => {
-    if (!isAuthenticated) return
+    let cancelled = false
 
-    void api.terraces()
-      .then((items) => {
-        setTerraces(items)
-        setSelectedTerraceId((previous) => previous ?? items[0]?.id ?? null)
-      })
-      .catch(() => {
-        setTerraces([])
-        setSelectedTerraceId(null)
-      })
-  }, [isAuthenticated])
-
-  useEffect(() => {
-    if (!isAuthenticated) return
-
-    let ignore = false
-
-    async function loadLiveData() {
+    const fetchDashboard = async () => {
+      setLoading(true)
+      setError('')
       try {
-        const [hillsides, alerts, notifications] = await Promise.all([
-          api.hillsides().catch(() => [] as Hillside[]),
-          api.alerts().catch(() => [] as AlertRecord[]),
-          api.notifications().catch(() => [] as NotificationRecord[]),
+        const [hillsideData, warningData] = await Promise.all([
+          api.hillsides(),
+          api.alerts(),
         ])
 
-        if (ignore) return
+        if (cancelled) return
 
-        setLiveCounts({
-          hillsides: hillsides.length,
-          alerts: alerts.length,
-          notifications: notifications.length,
-        })
-        setLiveAlerts(alerts)
-        setLiveNotifications(notifications)
-        setBackendStatus('ready')
-      } catch {
-        if (!ignore) {
-          setBackendStatus('error')
-          setLiveCounts({ hillsides: 0, alerts: 0, notifications: 0 })
-          setLiveAlerts([])
-          setLiveNotifications([])
+        setHillsides(hillsideData)
+        setAlerts(warningData)
+
+        const firstHillsideId = hillsideData[0]?.id ?? null
+        if (firstHillsideId) {
+          setSelectedHillsideId(firstHillsideId)
+        }
+      } catch (requestError) {
+        if (cancelled) return
+        setError(requestError instanceof Error ? requestError.message : 'Unable to load the dashboard data.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void fetchDashboard()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!selectedHillsideId) return
+
+    let cancelled = false
+
+    const fetchHillsideContext = async () => {
+      try {
+        const [terraceData, weatherData] = await Promise.all([
+          api.terraces(selectedHillsideId),
+          api.weather(selectedHillsideId),
+        ])
+
+        if (!cancelled) {
+          setTerraces(terraceData)
+          setForecast(weatherData.data)
+        }
+      } catch (requestError) {
+        if (!cancelled) {
+          setError(requestError instanceof Error ? requestError.message : 'Unable to load the selected hillside details.')
         }
       }
     }
 
-    void loadLiveData()
-    return () => { ignore = true }
-  }, [isAuthenticated])
-
-  useEffect(() => {
-    if (!riskChartRef.current) return
-
-    const chart = new Chart(riskChartRef.current, {
-      type: 'line',
-      data: {
-        labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
-        datasets: [
-          {
-            label: 'Slope runoff index',
-            data: [42, 46, 51, 57, 63, 71],
-            borderColor: '#16a34a',
-            backgroundColor: 'rgba(22, 163, 74, 0.18)',
-            tension: 0.35,
-            fill: true,
-          },
-          {
-            label: 'Soil retention',
-            data: [72, 69, 66, 74, 80, 76],
-            borderColor: '#f59e0b',
-            backgroundColor: 'rgba(245, 158, 11, 0.12)',
-            tension: 0.35,
-            fill: true,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        interaction: { mode: 'index', intersect: false },
-        plugins: {
-          legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 10 } },
-        },
-        scales: {
-          x: { grid: { display: false } },
-          y: { suggestedMin: 35, suggestedMax: 90, ticks: { callback: (value) => `${value}%` } },
-        },
-      },
-    })
-
-    return () => chart.destroy()
-  }, [])
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setAssistantOpen(false)
+    void fetchHillsideContext()
+    return () => {
+      cancelled = true
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [selectedHillsideId])
 
-  const statusDotClass = useMemo(() => {
-    if (isAuthenticated) return 'status-dot ok'
-    return 'status-dot warning'
-  }, [isAuthenticated])
+  const summaryCards = useMemo(() => [
+    { label: 'Active hillsides', value: String(hillsides.length), icon: MapPinned, tone: 'green' },
+    { label: 'Terraces tracked', value: String(terraces.length), icon: Sprout, tone: 'leaf' },
+    { label: 'Open alerts', value: String(alerts.length), icon: AlertTriangle, tone: 'amber' },
+    { label: 'AI access', value: isAuthenticated ? 'Enabled' : 'Sign in', icon: Bot, tone: 'sky' },
+  ], [alerts.length, hillsides.length, isAuthenticated, terraces.length])
 
-  async function handleSignIn() {
-    const candidate = authMode === 'jwt' ? authTokenInput.trim() : googleCredentialInput.trim()
-    if (!candidate) {
-      setSignInError('Enter a valid JWT token or Google credential before signing in.')
-      return
-    }
+  const topAlerts = alerts.slice(0, 3)
 
+  const handleLogout = () => {
+    setToken(null)
+    setAccessToken(null)
+    setUser(null)
+    window.sessionStorage.removeItem(STORAGE_KEY)
+  }
+
+  const persistToken = (newToken: string) => {
+    setToken(newToken)
+    setAccessToken(newToken)
+    window.sessionStorage.setItem(STORAGE_KEY, newToken)
+  }
+
+  const handleAuthSubmit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setAuthError('')
     setAuthBusy(true)
-    setSignInError('')
 
     try {
-      if (authMode === 'google') {
-        const response = await api.googleLogin(candidate)
-        const accessToken = response.access
-        window.localStorage.setItem(STORAGE_KEY, accessToken)
-        setAccessToken(accessToken)
-        setAuthEmail(response.user.email)
-        setSelectedRole(normalizeRole(response.user.role))
-        setIsAuthenticated(true)
-        setAuthTokenInput(accessToken)
+      if (authMode === 'signin') {
+        const result = await api.login({
+          email: authForm.email || undefined,
+          username: authForm.email || undefined,
+          password: authForm.password,
+        })
+        persistToken(result.access)
+        setUser({
+          id: result.user.id,
+          username: result.user.username,
+          email: result.user.email,
+          role: result.user.role,
+          first_name: result.user.first_name,
+          last_name: result.user.last_name,
+        })
       } else {
-        window.localStorage.setItem(STORAGE_KEY, candidate)
-        setAccessToken(candidate)
-        const profile = await api.me()
-        setSelectedRole(normalizeRole(profile.role))
-        setAuthEmail(profile.email)
-        setIsAuthenticated(true)
+        if (registerForm.password.length < 8) {
+          throw new Error('Password must be at least 8 characters long.')
+        }
+        const result = await api.register({
+          first_name: registerForm.first_name,
+          last_name: registerForm.last_name,
+          email: registerForm.email,
+          password: registerForm.password,
+          username: registerForm.username || registerForm.email,
+        })
+        persistToken(result.access)
+        setUser({
+          id: result.user.id,
+          username: result.user.username,
+          email: result.user.email,
+          role: result.user.role,
+          first_name: result.user.first_name,
+          last_name: result.user.last_name,
+        })
       }
-      setShowApiModal(false)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to connect to the secure backend.'
-      setSignInError(message)
+      setAuthForm({ email: '', password: '' })
+      setRegisterForm({ first_name: '', last_name: '', email: '', password: '', username: '' })
+      setAuthOpen(false)
+    } catch (requestError) {
+      setAuthError(requestError instanceof Error ? requestError.message : 'Authentication failed.')
     } finally {
       setAuthBusy(false)
     }
   }
 
-  function handleLogout() {
-    window.localStorage.removeItem(STORAGE_KEY)
-    setAccessToken(null)
-    setIsAuthenticated(false)
-    setAuthEmail('')
-    setSelectedRole('farmer')
-    setTerraces([])
-    setSelectedTerraceId(null)
-    setAuthTokenInput('')
-    setGoogleCredentialInput('')
-  }
+  const handleAssistantQuestion = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!assistantInput.trim() || !isAuthenticated) return
 
-  const onAssistantSubmit = async (event?: React.FormEvent) => {
-    event?.preventDefault()
-    const content = assistantInput.trim()
-    if (!content || assistantBusy || !isAuthenticated) return
-
-    const userMessage: ChatMessage = { id: Date.now(), role: 'user', text: content }
-    setAssistantMessages((previous) => [...previous, userMessage])
-    setAssistantInput('')
     setAssistantBusy(true)
-
+    setAssistantReply('')
     try {
-      const response = await api.askAssistant(content)
-      setAssistantMessages((previous) => [...previous, { id: Date.now() + 1, role: 'assistant', text: response.answer }])
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'The assistant could not respond.'
-      setAssistantMessages((previous) => [...previous, { id: Date.now() + 2, role: 'assistant', text: `I could not answer this request. ${message}` }])
+      const response = await api.askAssistant(assistantInput.trim())
+      setAssistantReply(response.answer)
+      setAssistantInput('')
+    } catch (requestError) {
+      setAssistantReply(requestError instanceof Error ? requestError.message : 'The assistant could not answer that request right now.')
     } finally {
       setAssistantBusy(false)
     }
   }
 
-  const handleLeafFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (!file.type.startsWith('image/')) {
-      setDiagnosisError('Unsupported image format. Please upload JPG, PNG, or WebP.')
-      return
-    }
-
-    setDiagnosisError('')
-    setLeafFile(file)
-    const preview = await fileToDataUrl(file)
-    setLeafPreview(preview)
-    setDiagnosis(null)
-  }
-
-  const runLeafDiagnosis = async () => {
-    if (!leafFile) {
-      setDiagnosisError('Select a leaf image first.')
-      return
-    }
-
-    if (!selectedTerraceId) {
-      setDiagnosisError('Select the terrace associated with this photo before submitting it.')
-      return
-    }
-
-    setDiagnosisBusy(true)
-    setDiagnosisError('')
-
-    try {
-      const result = await api.classifyPhoto(leafFile, selectedTerraceId)
-      setDiagnosis({
-        summary: result.classification_label,
-        recommendation: result.outcome === 'alert_created'
-          ? 'Review the generated alert and verify the affected terrace in the field.'
-          : result.outcome === 'need_another_photo'
-            ? 'Capture a clearer leaf photo in daylight and submit it again.'
-            : 'No disease alert was raised. Continue routine monitoring.',
-        confidence: result.confidence,
-        risk: result.is_disease ? 'Needs review' : 'Low risk',
-      })
-    } catch (error) {
-      setDiagnosisError(error instanceof Error ? error.message : 'The diagnosis could not be completed.')
-    } finally {
-      setDiagnosisBusy(false)
-    }
-  }
-
-  const handleVoiceInput = () => {
-    type SpeechRecognitionLike = {
-      lang: string
-      interimResults: boolean
-      maxAlternatives: number
-      onstart: (() => void) | null
-      onend: (() => void) | null
-      onerror: (() => void) | null
-      onresult: ((event: SpeechRecognitionEvent) => void) | null
-      start: () => void
-    }
-
-    type SpeechRecognitionCtor = new () => SpeechRecognitionLike
-
-    const SpeechRecognitionCtor = (window as typeof window & {
-      SpeechRecognition?: SpeechRecognitionCtor
-      webkitSpeechRecognition?: SpeechRecognitionCtor
-    }).SpeechRecognition || (window as typeof window & {
-      SpeechRecognition?: SpeechRecognitionCtor
-      webkitSpeechRecognition?: SpeechRecognitionCtor
-    }).webkitSpeechRecognition
-
-    if (!SpeechRecognitionCtor) {
-      setAssistantMessages((previous) => [...previous, { id: Date.now(), role: 'assistant', text: 'Voice input is not available in this browser. Use the keyboard to continue.' }])
-      return
-    }
-
-    const recognition = new SpeechRecognitionCtor()
-    recognition.lang = 'en-US'
-    recognition.interimResults = false
-    recognition.maxAlternatives = 1
-    recognition.onstart = () => setIsListening(true)
-    recognition.onend = () => setIsListening(false)
-    recognition.onerror = () => setIsListening(false)
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const transcript = event.results[0]?.[0]?.transcript || ''
-      if (transcript) setAssistantInput(transcript)
-    }
-    recognition.start()
-  }
+  const selectedHillside = hillsides.find((hillside) => hillside.id === selectedHillsideId) ?? null
 
   return (
     <div className="umusaruro-app">
       <header className="topbar">
-        <div className="brand-block">
-          <div className="brand-mark"><Sprout size={20} /></div>
+        <div className="brand-group">
+          <div className="brand-icon"><Sprout size={18} /></div>
           <div>
-            <p className="brand-name">UMUSARURO-SMART</p>
-            <span className="brand-subtitle">Precision agriculture • Rwanda</span>
+            <div className="brand-name">UMUSARURO-SMART</div>
+            <div className="brand-tag">Precision agriculture • Rwanda</div>
           </div>
         </div>
 
-        <div className="header-actions">
-          <button className="secondary-button" type="button" onClick={() => setShowApiModal(true)}>
-            <Zap size={15} /> {isAuthenticated ? 'Account' : 'Secure sign-in'}
+        <div className="topbar-actions">
+          <button type="button" className="secondary-button" onClick={() => setAuthOpen(true)}>
+            {isAuthenticated ? 'Account' : 'Sign in'}
           </button>
-          <div className={`status-pill ${isAuthenticated ? 'ready' : 'missing'}`}>
-            <span className={statusDotClass} /> {isAuthenticated ? `Signed in${authEmail ? ` • ${authEmail}` : ''}` : 'Sign in required'}
-          </div>
+          {user ? (
+            <div className="user-pill">
+              <User size={15} />
+              {user.first_name || user.username}
+            </div>
+          ) : (
+            <div className="user-pill offline">
+              <ShieldCheck size={15} />
+              Secure sign-in required
+            </div>
+          )}
         </div>
       </header>
 
       <main className="dashboard-shell">
-        <aside className="role-sidebar">
-          <div className="panel-card sidebar-card">
-            <p className="eyebrow">Access mode</p>
-            <h2>Role-based switcher</h2>
-            <div className="role-buttons">
-              {visibleRoles.map((role) => (
-                <button
-                  key={role}
-                  type="button"
-                  className={`role-button ${selectedRole === role ? 'active' : ''}`}
-                  onClick={() => setSelectedRole(role)}
-                >
-                  <span className="role-icon">
-                    {role === 'farmer' && <Leaf size={16} />}
-                    {role === 'agronomist' && <ShieldCheck size={16} />}
-                    {role === 'rab' && <Activity size={16} />}
-                  </span>
-                  <span>{roleLabels[role]}</span>
-                </button>
-              ))}
+        <section className="hero-panel panel">
+          <div>
+            <p className="eyebrow">Backend-first operations</p>
+            <h1>Terrace intelligence for Rwanda’s hillside farms</h1>
+            <p className="hero-copy">
+              Monitor erosion risk, public weather conditions, and agronomic guidance through secure Django API endpoints.
+            </p>
+            <div className="hero-actions">
+              <button type="button" className="primary-button" onClick={() => setAuthOpen(true)}>
+                {isAuthenticated ? 'Open account' : 'Secure sign in'}
+              </button>
+              <button type="button" className="secondary-button" onClick={() => setAssistantInput('Describe the current hillside risk and recommended actions.') }>
+                Ask the assistant
+              </button>
             </div>
           </div>
 
-          <div className="panel-card sidebar-card compact">
-            <p className="eyebrow">System status</p>
-            <ul className="mini-list">
-              <li><span>Backend sync</span><strong>{backendStatus === 'ready' ? `Live (${liveCounts.hillsides} hillsides)` : backendStatus === 'error' ? 'Unavailable' : 'Checking…'}</strong></li>
-              <li><span>Open alerts</span><strong>{liveCounts.alerts || 0} flagged</strong></li>
-              <li><span>Notifications</span><strong>{liveCounts.notifications || 0} updates</strong></li>
-            </ul>
+          <div className="hero-side">
+            <div className="status-card">
+              <span className="tiny-label">Current user</span>
+              <strong>{user ? `${user.first_name || user.username} • ${badgeLabel(user.role)}` : 'Guest access'}</strong>
+              <small>{user ? user.email : 'Create an account or sign in to use the protected features.'}</small>
+            </div>
           </div>
-        </aside>
+        </section>
 
-        <section className="main-panel">
-          <div className="hero-card panel-card">
-            <div className="hero-copy">
-              <p className="eyebrow">{currentRoleConfig.title}</p>
-              <h1>{roleHighlights[selectedRole].subtitle}</h1>
-              <p className="hero-description">
-                {selectedRole === 'guest' && 'Browse public crop intelligence, view hillside risk alerts, and access limited advisory support before you sign in.'}
-                {selectedRole === 'farmer' && 'Track your terraced plots, review field weather, and scan leaf stress from the field using a mobile-first workflow.'}
-                {selectedRole === 'agronomist' && 'Review validated disease signals, dispatch cooperative actions, and apply agronomic recommendations at the sector level.'}
-                {selectedRole === 'rab' && 'Assess district-level disease spread, monitor terrace stability, and validate high-priority intervention areas.'}
-              </p>
-              <div className="hero-actions">
-                <button className="primary-button" type="button">View recommendations</button>
-                <button className="secondary-button" type="button" onClick={() => setAssistantOpen(true)}>
-                  <Bot size={15} /> Live assistant
-                </button>
+        <section className="summary-grid">
+          {summaryCards.map(({ label, value, icon: Icon, tone }) => (
+            <div key={label} className="stats-panel panel">
+              <div className={`metric-icon ${tone}`}><Icon size={18} /></div>
+              <div>
+                <strong>{value}</strong>
+                <span>{label}</span>
+              </div>
+            </div>
+          ))}
+        </section>
+
+        {error ? <div className="alert-banner error">{error}</div> : null}
+
+        <section className="content-grid">
+          <aside className="panel sidebar-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Field portfolio</p>
+                <h2>Hillsides</h2>
               </div>
             </div>
 
-            <div className="hero-metrics">
-              {metricCards[selectedRole].map(({ label, value, note, tone, icon: Icon }) => (
-                <div key={label} className={`metric`}
-                  style={{ ['--metric-accent' as string]: tone === 'green' ? '#166534' : tone === 'amber' ? '#b45309' : tone === 'sky' ? '#1d4ed8' : '#14532d' }}
-                >
-                  <div className={`metric-icon ${tone}`}><Icon size={18} /></div>
-                  <div>
-                    <strong>{value}</strong>
-                    <span>{label}</span>
-                    <small>{note}</small>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="stats-grid">
-            {featuredAlerts.map((alert) => (
-              <div key={`${alert.title}-${alert.district}`} className="panel-card alert-chip-card">
-                <div className="alert-topline">
-                  <span className={`severity severity-${alert.severity}`}>{alert.severity}</span>
-                  <span>{alert.district}</span>
-                </div>
-                <h3>{alert.title}</h3>
-                <strong>{alert.value}</strong>
-              </div>
-            ))}
-          </div>
-
-          <div className="content-grid">
-            <div className="panel-card chart-panel">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Terrace monitoring</p>
-                  <h2>Hillside runoff & retention</h2>
-                </div>
-                <span className="pill success">Healthy trend</span>
-              </div>
-              <div className="chart-wrap">
-                <canvas ref={riskChartRef} />
-              </div>
-            </div>
-
-            <div className="panel-card feed-panel">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Regional updates</p>
-                  <h2>News & advisory feed</h2>
-                </div>
-                <span className="pill neutral">Live</span>
-              </div>
-
-              <div className="news-list">
-                {newsFeed.map((item) => (
-                  <article key={`${item.title}-${item.time}`} className="news-item">
-                    <span className={`severity severity-${item.severity}`}>{item.tag}</span>
-                    <div>
-                      <h3>{item.title}</h3>
-                      <time>{item.time}</time>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="bottom-grid">
-            <div className="panel-card diagnostic-panel">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Engine 2</p>
-                  <h2>Leaf diagnostics</h2>
-                </div>
-                <span className="pill amber">Vision model</span>
-              </div>
-
-              {selectedRole === 'guest' ? (
-                <div className="guest-gate">
-                  <UserCircle2 size={32} />
-                  <h3>Sign in to access leaf image diagnostics</h3>
-                  <p>Guest access is limited to public advisory content. Farmers and agronomists can upload leaves and receive crop recommendations.</p>
-                  <button className="primary-button" type="button" onClick={() => setShowApiModal(true)}>Secure sign-in</button>
-                </div>
+            <div className="hillside-list">
+              {loading ? (
+                <div className="loading-box"><Loader2 className="spin" size={18} /> Loading hillsides…</div>
+              ) : hillsides.length === 0 ? (
+                <div className="empty-state">No hillsides are available yet.</div>
               ) : (
-                <>
-                  <div className="upload-box">
-                    <label htmlFor="terrace-select" className="field-label" style={{ marginBottom: '0.75rem' }}>
-                      <span>Terrace</span>
-                      <select
-                        id="terrace-select"
-                        value={selectedTerraceId ?? ''}
-                        onChange={(event) => setSelectedTerraceId(Number(event.target.value) || null)}
-                        style={{ width: '100%' }}
-                      >
-                        <option value="">Select a terrace</option>
-                        {terraces.map((terrace) => (
-                          <option key={terrace.id} value={terrace.id}>{terrace.name}</option>
-                        ))}
-                      </select>
-                    </label>
-
-                    <input id="leaf-upload" type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLeafFile} />
-                    <label htmlFor="leaf-upload" className="upload-label">
-                      <Camera size={18} />
-                      <span>{leafFile ? leafFile.name : 'Upload or capture leaf image'}</span>
-                    </label>
-                    {leafPreview && <img src={leafPreview} alt="Selected leaf preview" className="leaf-preview" />}
-                  </div>
-
-                  <div className="diagnostic-actions">
-                    <button type="button" className="primary-button" onClick={runLeafDiagnosis} disabled={diagnosisBusy || !selectedTerraceId}>
-                      <Microscope size={16} /> {diagnosisBusy ? 'Analyzing leaf...' : 'Run diagnosis'}
-                    </button>
-                    <button type="button" className="secondary-button" onClick={() => {
-                      setLeafFile(null)
-                      setLeafPreview(null)
-                      setDiagnosis(null)
-                      setDiagnosisError('')
-                    }}>
-                      <FileImage size={15} /> Clear
-                    </button>
-                  </div>
-
-                  {diagnosisError && <div className="inline-error">{diagnosisError}</div>}
-
-                  {diagnosis && (
-                    <div className="diagnosis-result">
-                      <div className="result-header">
-                        <span className="pill success">Confidence: {diagnosis.confidence}</span>
-                        <span className="pill neutral">{diagnosis.risk}</span>
-                      </div>
-                      <h3>AI assessment</h3>
-                      <p>{diagnosis.summary}</p>
-                      <div className="recommendation-box">
-                        <strong>Recommended action</strong>
-                        <p>{diagnosis.recommendation}</p>
-                      </div>
+                hillsides.map((hillside) => (
+                  <button
+                    key={hillside.id}
+                    type="button"
+                    className={`hillside-item ${selectedHillsideId === hillside.id ? 'selected' : ''}`}
+                    onClick={() => setSelectedHillsideId(hillside.id)}
+                  >
+                    <div>
+                      <strong>{hillside.name}</strong>
+                      <small>{hillside.district} • {hillside.sector}</small>
                     </div>
-                  )}
-                </>
+                    <ArrowRight size={16} />
+                  </button>
+                ))
               )}
             </div>
+          </aside>
 
-            <div className="panel-card quick-actions-panel">
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Knowledge tools</p>
-                  <h2>AI assistant actions</h2>
+          <div className="panel detail-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Weather and risk</p>
+                <h2>{selectedHillside ? selectedHillside.name : 'Select a hillside'}</h2>
+              </div>
+              {selectedHillside ? (
+                <span className="pill">{selectedHillside.district}</span>
+              ) : null}
+            </div>
+
+            {forecast ? (
+              <>
+                <div className="weather-summary">
+                  <div className="weather-chip">
+                    <CloudRain size={18} />
+                    <span>{forecast.current.weather || 'Weather data available'}</span>
+                  </div>
+                  <div className="weather-chip accent">
+                    <Droplets size={18} />
+                    <span>{forecast.current.relative_humidity_pct ?? '--'}% humidity</span>
+                  </div>
                 </div>
+
+                <div className="weather-grid">
+                  <div className="weather-stat">
+                    <Wind size={16} />
+                    <div>
+                      <small>Temperature</small>
+                      <strong>{forecast.current.temperature_c !== null ? `${forecast.current.temperature_c}°C` : 'Not available'}</strong>
+                    </div>
+                  </div>
+                  <div className="weather-stat">
+                    <CloudRain size={16} />
+                    <div>
+                      <small>Rain chance</small>
+                      <strong>{forecast.daily[0]?.precipitation_probability_pct ?? '--'}%</strong>
+                    </div>
+                  </div>
+                  <div className="weather-stat">
+                    <Activity size={16} />
+                    <div>
+                      <small>Wind</small>
+                      <strong>{forecast.current.wind_speed_kmh !== null ? `${forecast.current.wind_speed_kmh} km/h` : 'Not available'}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="advisory-box">
+                  <h3>Field guidance</h3>
+                  <p>{forecast.weather_advice || forecast.advice_note || 'The platform has no advisory note yet for this hillside.'}</p>
+                </div>
+
+                <div className="forecast-row">
+                  {forecast.daily.slice(0, 3).map((day) => (
+                    <div key={day.date} className="day-card">
+                      <span>{day.date}</span>
+                      <strong>{day.weather || 'Forecast'}</strong>
+                      <small>{day.temperature_max_c ?? '--'}° / {day.temperature_min_c ?? '--'}°</small>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="empty-state">Select a hillside to view the live weather forecast.</div>
+            )}
+          </div>
+        </section>
+
+        <section className="bottom-grid">
+          <div className="panel alert-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Operational review</p>
+                <h2>Recent alerts</h2>
               </div>
-              <div className="quick-actions">
-                {quickActions.map((action) => (
-                  <button
-                    key={action}
-                    type="button"
-                    className="quick-action"
-                    onClick={() => {
-                      setAssistantOpen(true)
-                      setAssistantInput(action)
-                    }}
-                  >
-                    <MessagesSquare size={16} />
-                    {action}
-                  </button>
-                ))}
+            </div>
+
+            <div className="alert-list">
+              {topAlerts.length === 0 ? (
+                <div className="empty-state">No alerts yet for the current hillside portfolio.</div>
+              ) : (
+                topAlerts.map((alert) => (
+                  <article key={alert.id} className="alert-item">
+                    <div className="alert-head">
+                      <span className={`status-pill ${alert.status}`}>{alert.status}</span>
+                      <span className="small-muted">{alert.hillside_name}</span>
+                    </div>
+                    <h3>{alert.notification_title || alert.message}</h3>
+                    <p>{alert.message}</p>
+                    <small>{alert.recommended_action || 'Review the terrace details and field notes.'}</small>
+                  </article>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="panel assistant-panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">AI advisor</p>
+                <h2>Ask about field conditions</h2>
               </div>
+            </div>
+
+            <form className="assistant-form" onSubmit={handleAssistantQuestion}>
+              <textarea
+                value={assistantInput}
+                onChange={(event) => setAssistantInput(event.target.value)}
+                placeholder={isAuthenticated ? 'Ask about soil risk, weather, terraces, or disease patterns…' : 'Sign in to use the backend AI advisor'}
+                disabled={!isAuthenticated}
+                rows={4}
+              />
+              <button type="submit" className="primary-button" disabled={!isAuthenticated || assistantBusy || !assistantInput.trim()}>
+                {assistantBusy ? 'Thinking…' : 'Send to assistant'}
+              </button>
+            </form>
+
+            <div className="assistant-output">
+              {assistantReply ? (
+                <p>{assistantReply}</p>
+              ) : (
+                <p className="muted-copy">The assistant uses the secure Django proxy and approved agricultural guidance stored in the backend.</p>
+              )}
             </div>
           </div>
         </section>
       </main>
 
-      <div className={`assistant-widget ${assistantOpen ? 'open' : ''}`}>
-        <button type="button" className="assistant-launcher" onClick={() => setAssistantOpen((value) => !value)}>
-          <Bot size={22} />
-        </button>
-
-        {assistantOpen && (
-          <div className="assistant-panel">
-            <div className="assistant-header">
+      {authOpen ? (
+        <div className="modal-backdrop" onClick={() => setAuthOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
               <div>
-                <p className="eyebrow">AI advisor</p>
-                <h3>UMUSARURO assistant</h3>
+                <p className="eyebrow">Authentication</p>
+                <h2>{authMode === 'signin' ? 'Secure sign in' : 'Create account'}</h2>
               </div>
-              <button type="button" className="close-button" onClick={() => setAssistantOpen(false)}>×</button>
+              <button type="button" className="close-button" onClick={() => setAuthOpen(false)}>×</button>
             </div>
 
-            <div className="assistant-stream">
-              {assistantMessages.map((message) => (
-                <div key={message.id} className={`message ${message.role}`}>
-                  <span>{message.role === 'assistant' ? 'AI' : 'You'}</span>
-                  <p>{message.text}</p>
-                </div>
-              ))}
-              {assistantBusy && <div className="message assistant"><span>AI</span><p>Consulting the latest agronomic guidance…</p></div>}
+            <div className="mode-switch">
+              <button type="button" className={authMode === 'signin' ? 'selected' : ''} onClick={() => setAuthMode('signin')}>Sign in</button>
+              <button type="button" className={authMode === 'register' ? 'selected' : ''} onClick={() => setAuthMode('register')}>Register</button>
             </div>
 
-            <form className="assistant-form" onSubmit={(event) => { void onAssistantSubmit(event) }}>
-              <button type="button" className={`voice-button ${isListening ? 'active' : ''}`} onClick={handleVoiceInput} aria-label="Use voice input">
-                <Mic size={16} />
-              </button>
-              <input
-                type="text"
-                value={assistantInput}
-                onChange={(event) => setAssistantInput(event.target.value)}
-                placeholder={selectedRole === 'guest' ? 'Sign in to ask the assistant…' : 'Ask about field health, weather, or terraces…'}
-                disabled={selectedRole === 'guest'}
-              />
-              <button type="submit" disabled={assistantBusy || !assistantInput.trim() || selectedRole === 'guest'}>
-                Send
-              </button>
-            </form>
-          </div>
-        )}
-      </div>
-
-      {showApiModal && (
-        <div className="api-modal-backdrop" onClick={() => setShowApiModal(false)}>
-          <div className="api-modal" onClick={(event) => event.stopPropagation()}>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault()
-                void handleSignIn()
-              }}
-            >
-              <div className="section-header">
-                <div>
-                  <p className="eyebrow">Authentication</p>
-                  <h2>Secure backend sign-in</h2>
-                </div>
-                <button type="button" className="close-button" onClick={() => setShowApiModal(false)}>×</button>
-              </div>
-              <p className="modal-copy">Use a valid Google identity token or a JWT access token from the backend to sign in securely. The Groq API is never called from the browser.</p>
-
-              <div className="auth-toggle" style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
-                <button type="button" className={authMode === 'jwt' ? 'primary-button' : 'secondary-button'} onClick={() => setAuthMode('jwt')}>
-                  JWT token
-                </button>
-                <button type="button" className={authMode === 'google' ? 'primary-button' : 'secondary-button'} onClick={() => setAuthMode('google')}>
-                  Google token
-                </button>
-              </div>
-
-              {signInError && <div className="inline-error" style={{ marginBottom: '1rem' }}>{signInError}</div>}
-
-              {authMode === 'jwt' ? (
-                <label className="field-label">
-                  <span>Access token</span>
-                  <input
-                    type="password"
-                    value={authTokenInput}
-                    onChange={(event) => setAuthTokenInput(event.target.value)}
-                    placeholder="Paste your JWT access token"
-                    autoComplete="off"
-                    required
-                  />
-                </label>
+            <form onSubmit={handleAuthSubmit} className="auth-form">
+              {authMode === 'signin' ? (
+                <>
+                  <label>
+                    <span>Email or username</span>
+                    <input
+                      type="text"
+                      value={authForm.email}
+                      onChange={(event) => setAuthForm((current) => ({ ...current, email: event.target.value }))}
+                      placeholder="you@example.com"
+                    />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={authForm.password}
+                      onChange={(event) => setAuthForm((current) => ({ ...current, password: event.target.value }))}
+                      placeholder="Enter your password"
+                    />
+                  </label>
+                </>
               ) : (
-                <label className="field-label">
-                  <span>Google credential</span>
-                  <input
-                    type="password"
-                    value={googleCredentialInput}
-                    onChange={(event) => setGoogleCredentialInput(event.target.value)}
-                    placeholder="Paste the Google ID token"
-                    autoComplete="off"
-                    required
-                  />
-                </label>
+                <>
+                  <div className="inline-fields">
+                    <label>
+                      <span>First name</span>
+                      <input
+                        type="text"
+                        value={registerForm.first_name}
+                        onChange={(event) => setRegisterForm((current) => ({ ...current, first_name: event.target.value }))}
+                      />
+                    </label>
+                    <label>
+                      <span>Last name</span>
+                      <input
+                        type="text"
+                        value={registerForm.last_name}
+                        onChange={(event) => setRegisterForm((current) => ({ ...current, last_name: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    <span>Email</span>
+                    <input
+                      type="email"
+                      value={registerForm.email}
+                      onChange={(event) => setRegisterForm((current) => ({ ...current, email: event.target.value }))}
+                    />
+                  </label>
+                  <label>
+                    <span>Username</span>
+                    <input
+                      type="text"
+                      value={registerForm.username}
+                      onChange={(event) => setRegisterForm((current) => ({ ...current, username: event.target.value }))}
+                      placeholder="Optional, defaults to email prefix"
+                    />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={registerForm.password}
+                      onChange={(event) => setRegisterForm((current) => ({ ...current, password: event.target.value }))}
+                    />
+                  </label>
+                </>
               )}
+
+              {authError ? <div className="auth-error">{authError}</div> : null}
 
               <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setShowApiModal(false)}>Cancel</button>
-                <button type="submit" className="primary-button" disabled={authBusy}> {authBusy ? 'Connecting…' : 'Sign in'} </button>
+                <button type="button" className="secondary-button" onClick={() => setAuthOpen(false)}>Cancel</button>
+                <button type="submit" className="primary-button" disabled={authBusy}>
+                  {authBusy ? 'Processing…' : authMode === 'signin' ? 'Sign in' : 'Create account'}
+                </button>
               </div>
 
-              {isAuthenticated && (
-                <div className="modal-actions" style={{ marginTop: '1rem' }}>
-                  <button type="button" className="secondary-button" onClick={handleLogout}>Log out</button>
+              {isAuthenticated ? (
+                <div className="modal-actions logout-row">
+                  <button type="button" className="secondary-button" onClick={handleLogout}>
+                    <LogOut size={15} /> Log out
+                  </button>
                 </div>
-              )}
+              ) : null}
             </form>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   )
 }
