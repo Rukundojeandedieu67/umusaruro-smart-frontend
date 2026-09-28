@@ -35,7 +35,7 @@ const titles: Record<string, string> = {
   '/': 'Pilot overview', '/farm': 'Hillsides & terraces', '/map': 'Pilot map',
   '/ndvi': 'Vegetation health', '/alerts': 'Alert center', '/notifications': 'Notifications',
   '/weather': 'Weather & advice', '/advisories': 'Advisories', '/scanner': 'Crop scanner',
-  '/assistant': 'Umusaruro Assistant', '/profile': 'Account & settings',
+  '/assistant': 'Mujyanama AI', '/profile': 'Account & settings',
   '/extension': 'Extension-worker desk',
 }
 

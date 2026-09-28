@@ -1,4 +1,5 @@
 import type {
+  AIEngineStatus,
   AlertRecord,
   AssistantResponse,
   CachedResponse,
@@ -12,7 +13,10 @@ import type {
   WeatherForecast,
 } from './types'
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '/api/v1').replace(/\/+$/, '')
+const DEFAULT_API_BASE_URL = import.meta.env.PROD
+  ? 'https://umusaruro-smart-api.onrender.com/api/v1'
+  : '/api/v1'
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || DEFAULT_API_BASE_URL).replace(/\/+$/, '')
 const CACHE_PREFIX = 'umusaruro:api-cache:'
 const CACHE_TTL = 1000 * 60 * 60 * 24
 
@@ -264,10 +268,11 @@ export const api = {
     form.set('terrace_id', String(terraceId))
     return request<PhotoClassification>('alerts/classify-photo/', { method: 'POST', body: form })
   },
-  askAssistant: (question: string) => request<AssistantResponse>('assistant/ask/', {
+  askAssistant: (question: string, context = '') => request<AssistantResponse>('assistant/ask/', {
     method: 'POST',
-    body: { question },
+    body: { question, context },
   }),
+  aiStatus: () => request<AIEngineStatus>('ai/status/'),
   login: (payload: { username?: string; email?: string; password: string }) => request<{ access: string; refresh: string; user: { id: number; username: string; email: string; role: string; first_name: string; last_name: string } }>('auth/login/', {
     method: 'POST',
     body: payload,

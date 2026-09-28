@@ -103,6 +103,17 @@ export interface WeatherDay {
   precipitation_mm: number | null
 }
 
+export interface WeatherHour {
+  time: string
+  temperature_c: number | null
+  relative_humidity_pct: number | null
+  precipitation_probability_pct: number | null
+  precipitation_mm: number | null
+  wind_speed_kmh: number | null
+  weather_code: number | null
+  weather: string
+}
+
 export interface WeatherForecast {
   hillside_id: number
   hillside_name: string
@@ -122,6 +133,7 @@ export interface WeatherForecast {
     weather_code: number | null
     weather: string
   }
+  hourly: WeatherHour[]
   daily: WeatherDay[]
   weather_advice: string
   advice_note: string
@@ -135,7 +147,15 @@ export interface PhotoClassification {
   classification_label: string
   is_disease: boolean
   confidence: string
-  classifier_mode: 'stub' | 'model'
+  classifier_mode: 'stub' | 'model' | 'groq'
+}
+
+export interface AIEngineStatus {
+  groq_configured: boolean
+  assistant_mode: string
+  photo_engine: 'onnx' | 'groq_vision' | 'unavailable'
+  photo_configured: boolean
+  photo_fallback_available: boolean
 }
 
 export interface AssistantResponse {
